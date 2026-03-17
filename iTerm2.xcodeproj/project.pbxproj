@@ -10859,16 +10859,6 @@
 			name = SSKeychain;
 			sourceTree = "<group>";
 		};
-		4325D9EB31536D67A2479157 /* sources */ = {
-			isa = PBXGroup;
-			children = (
-				625C956DD832F4FD0D8F9715 /* PrivateIPChecker.swift */,
-				BEABECF1B22E3E29E7D70FC4 /* iTermLocalNetworkPermissionPrompter.swift */,
-			);
-			name = sources;
-			path = sources;
-			sourceTree = "<group>";
-		};
 		530AB7EC20AE85DE00D2AA08 /* api */ = {
 			isa = PBXGroup;
 			children = (
@@ -12983,6 +12973,7 @@
 				479FDFE9C0F424FEC10526EC /* iTermCursorSlideAnimator.m */,
 				ED49EE365D629DAE80503BFD /* iTermNonTextPasteHelper.swift */,
 				625C956DD832F4FD0D8F9715 /* PrivateIPChecker.swift */,
+				BEABECF1B22E3E29E7D70FC4 /* iTermLocalNetworkPermissionPrompter.swift */,
 			);
 			name = Helpers;
 			sourceTree = "<group>";
