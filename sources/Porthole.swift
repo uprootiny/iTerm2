@@ -274,6 +274,8 @@ class PortholeRegistry: NSObject {
 
     @objc(decodeRecord:) func decode(record: iTermEncoderGraphRecord) {
         mutex.sync {
+            // Preserve generation so unchanged state can skip re-encoding.
+            _generation = max(_generation, record.generation)
             record.enumerateArray(withKey: "portholes") { identifier, index, plist, stop in
                 guard let dict = plist as? NSDictionary else {
                     return
