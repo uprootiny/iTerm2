@@ -25,7 +25,9 @@ public class iTermMetalView: NSView {
     private static let getDrawableQueue = DispatchQueue(label: "com.iterm2.get-drawable")
     private var _needsDisplay = false
     private var lastDrawTriggerTime: CFTimeInterval = 0
-    private var metalLayerBox: iTermMetalLayerBox? = nil
+    // nonisolated(unsafe) because iTermMetalLayerBox provides its own thread-safe access
+    // via MutableAtomicObject, and we need to access it from the private render queue.
+    private nonisolated(unsafe) var metalLayerBox: iTermMetalLayerBox? = nil
     private var frameInterval: Int = 0
     private var sizeDirty: Bool = false
     private var drawableScaleFactor: CGSize = .zero
@@ -416,6 +418,36 @@ extension iTermMetalView {
         }
         _currentDrawable = fetchDrawable(timeout: timeout)
         return _currentDrawable
+    }
+
+    // Returns a fresh drawable without caching. Use this when multiple frames
+    // are in flight and each needs its own drawable.
+    @objc
+    func nextDrawable(timeout: TimeInterval) -> CAMetalDrawable? {
+        return fetchDrawable(timeout: timeout)
+    }
+
+    // Creates a render pass descriptor for rendering to a specific drawable's texture.
+    // Use this with nextDrawable() when you need an RPD for a non-cached drawable.
+    @objc
+    func renderPassDescriptor(forDrawable drawable: CAMetalDrawable) -> MTLRenderPassDescriptor {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = drawable.texture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].clearColor = clearColor
+        return descriptor
+    }
+}
+
+// MARK: - Thread-safe drawable acquisition (no main queue required)
+
+extension iTermMetalView {
+    /// Acquires a drawable directly without requiring the main queue.
+    /// This bypasses the promise-based waiting logic and calls CAMetalLayer.nextDrawable()
+    /// directly via the thread-safe iTermMetalLayerBox wrapper.
+    @objc
+    nonisolated func nextDrawableFromAnyThread() -> CAMetalDrawable? {
+        return metalLayerBox?.nextDrawable()
     }
 }
 

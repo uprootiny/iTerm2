@@ -223,9 +223,7 @@ typedef struct {
         _copyModeCursorRenderer = [iTermCursorRenderer newCopyModeCursorRendererWithDevice:device];
         _keyCursorRenderer = [iTermCursorRenderer newKeyCursorRendererWithDevice:device];
         _copyBackgroundRenderer = [[iTermCopyBackgroundRenderer alloc] initWithDevice:device];
-        if (iTermTextIsMonochrome()) {} else {
-            _copyToDrawableRenderer = [[iTermCopyToDrawableRenderer alloc] initWithDevice:device];
-        }
+        _copyToDrawableRenderer = [[iTermCopyToDrawableRenderer alloc] initWithDevice:device];
         _blockRenderer = [[iTermBlockRenderer alloc] initWithDevice:device];
         if (@available(macOS 11, *)) {
             _pillBackgroundRenderer = [[iTermPillBackgroundRenderer alloc] initWithDevice:device];
@@ -385,7 +383,7 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
     }
 
     iTermPreciseTimerSaveLog([NSString stringWithFormat:@"%@: Dropped frames", _identifier],
-                             [NSString stringWithFormat:@"%0.1f%%\n", 100.0 * ((double)_dropped / (double)_total)]);
+                             [NSString stringWithFormat:@"%0.1f%%\n", 100.0 * ((double)_dropped / (double)MAX(1, _total))]);
     if (_total % 10 == 1) {
         iTermPreciseTimerSaveLog([NSString stringWithFormat:@"%@: Start-to-Start Time (ms)", _identifier],
                                  [_startToStartHistogram stringValue]);
@@ -395,6 +393,8 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
 }
 
 - (int)maximumNumberOfFramesInFlight {
+#warning TOOD: Try this.
+#if ENABLE_DYNAMIC_FRAMES_IN_FLIGHT
     if (![iTermAdvancedSettingsModel throttleMetalConcurrentFrames]) {
         return iTermMetalDriverMaximumNumberOfFramesInFlight;
     }
@@ -423,6 +423,9 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
         [_currentDrawableTime reset];
     }
     return _maxFramesInFlight;
+#else
+    return iTermMetalDriverMaximumNumberOfFramesInFlight;
+#endif
 }
 
 - (iTermMetalDriverAsyncContext *)newContextForDrawInView:(iTermMetalView *)view count:(int)count {
@@ -473,6 +476,9 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
 
 - (BOOL)reallyDrawInMTKView:(nonnull iTermMetalView *)view startToStartTime:(NSTimeInterval)startToStartTime {
     DLog(@"Draw in %@ for %@", view, self.dataSource);
+#if ENABLE_SYNCHRONOUS_PRESENTATION
+    view.presentsWithTransaction = YES;
+#endif
     @synchronized (self) {
         [_inFlightHistogram addValue:_currentFrames.count];
     }
@@ -892,7 +898,8 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
 
 // Main thread
 - (void)acquireScarceResources:(iTermMetalFrameData *)frameData view:(iTermMetalView *)view {
-    const NSTimeInterval timeout = 1.0 / 60.0;
+                 #warning TODO: Try lowering the timeout
+    const NSTimeInterval timeout = INFINITY;
 
     if (frameData.debugInfo) {
         [frameData measureTimeForStat:iTermMetalFrameDataStatMtGetRenderPassDescriptor ofBlock:^{
@@ -908,8 +915,7 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
     } else {
 #if ENABLE_DEFER_CURRENT_DRAWABLE
         const BOOL synchronousDraw = (_context.group != nil);
-        frameData.deferCurrentDrawable = ([iTermPreferences maximizeThroughput] &&
-                                          !synchronousDraw);
+        frameData.deferCurrentDrawable = !synchronousDraw;
 #else
         frameData.deferCurrentDrawable = NO;
 #endif
@@ -1146,9 +1152,9 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
         return;
     }
     _copyBackgroundRenderer.enabled = (frameData.intermediateRenderPassDescriptor != nil);
-    if (iTermTextIsMonochrome()) {} else {
-        _copyToDrawableRenderer.enabled = YES;
-    }
+#if ENABLE_DEFER_CURRENT_DRAWABLE
+    _copyToDrawableRenderer.enabled = YES;
+#endif
 }
 
 - (void)updateBadgeRendererForFrameData:(iTermMetalFrameData *)frameData {
@@ -1211,7 +1217,13 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
     copyState.sourceTexture = frameData.intermediateRenderPassDescriptor.colorAttachments[0].texture;
 
     iTermCopyToDrawableRendererTransientState *dState = [frameData transientStateForRenderer:_copyToDrawableRenderer];
-    dState.sourceTexture = frameData.temporaryRenderPassDescriptor.colorAttachments[0].texture;
+    if (frameData.deferCurrentDrawable && iTermTextIsMonochrome()) {
+        // In monochrome deferred mode, we render to renderPassDescriptor (an offscreen texture)
+        // and need to copy from it to the drawable.
+        dState.sourceTexture = frameData.renderPassDescriptor.colorAttachments[0].texture;
+    } else {
+        dState.sourceTexture = frameData.temporaryRenderPassDescriptor.colorAttachments[0].texture;
+    }
 }
 
 - (void)populateCursorRendererTransientStateWithFrameData:(iTermMetalFrameData *)frameData {
@@ -1965,8 +1977,8 @@ extraIdentifyingInfoForIcon:button.extraIdentifyingInfoForIcon];
                frameData.temporaryRenderPassDescriptor,
                frameData.renderPassDescriptor ];
     } else {
-        // No temporary texture
-        assert(pass >= 0 && pass <= 1);
+        // No temporary texture. Pass 2 is still valid for deferred drawable copy.
+        assert(pass >= 0 && pass <= 2);
         descriptors =
         @[ frameData.intermediateRenderPassDescriptor ?: frameData.renderPassDescriptor,
            frameData.renderPassDescriptor,
@@ -2139,25 +2151,54 @@ extraIdentifyingInfoForIcon:button.extraIdentifyingInfoForIcon];
     [frameData measureTimeForStat:iTermMetalFrameDataStatPqBlockOnSynchronousGetDrawable ofBlock:^{
         // Get a drawable and then copy to it.
         if (!self.waitingOnSynchronousDraw) {
+#if ENABLE_NEXTDRAWABLE_ON_PRIVATE_QUEUE
+            // Acquire drawable directly on private queue - no main queue dispatch needed.
+            __block id<CAMetalDrawable> drawable = nil;
+            __block id<MTLTexture> texture = nil;
+            __block MTLRenderPassDescriptor *renderPassDescriptor = nil;
+            [frameData measureTimeForStat:iTermMetalFrameDataStatMtGetCurrentDrawable ofBlock:^{
+                drawable = [frameData.view nextDrawableFromAnyThread];
+                DLog(@"%p DEFERRED PATH (private queue): got drawable %@ for frame %@", self, drawable, @(frameData.frameNumber));
+                if (drawable) {
+                    texture = drawable.texture;
+                    // Create render pass descriptor directly - avoids Swift concurrency issues.
+                    // clearColor doesn't matter since we do a full copy to the drawable.
+                    renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+                    renderPassDescriptor.colorAttachments[0].texture = texture;
+                    renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+                    renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+                }
+            }];
+            frameData.destinationDrawable = drawable;
+            frameData.destinationTexture = texture;
+            frameData.destinationTexture.label = @"Drawable destination";
+            frameData.renderPassDescriptor = renderPassDescriptor;
+#else
             dispatch_semaphore_t sema = dispatch_semaphore_create(0);
             __block BOOL timedOut = NO;
             __block id<CAMetalDrawable> drawable = nil;
             __block id<MTLTexture> texture = nil;
             __block MTLRenderPassDescriptor *renderPassDescriptor = nil;
             dispatch_async(dispatch_get_main_queue(), ^{
-                dispatch_semaphore_signal(sema);
                 @synchronized(self) {
                     if (timedOut) {
                         DLog(@"** TIMED OUT %@ **", frameData);
+                        dispatch_semaphore_signal(sema);
                         return;
                     }
                     [frameData measureTimeForStat:iTermMetalFrameDataStatMtGetCurrentDrawable ofBlock:^{
-                        drawable = frameData.view.currentDrawable;
+                        // Use nextDrawableWithTimeout: to get a fresh drawable for each frame,
+                        // avoiding the race condition where multiple in-flight frames share
+                        // the cached currentDrawable.
+#warning TODO: Infinity seems a bit too high.
+                        drawable = [frameData.view nextDrawableWithTimeout:INFINITY];
                         DLog(@"%p DEFERRED PATH: got drawable %@ for frame %@", self, drawable, @(frameData.frameNumber));
                         texture = drawable.texture;
-                        renderPassDescriptor = frameData.view.currentRenderPassDescriptor;
+                        renderPassDescriptor = [frameData.view renderPassDescriptorForDrawable:drawable];
                     }];
                 }
+                // Signal after work is done so the waiting thread sees the results
+                dispatch_semaphore_signal(sema);
             });
             // TODO: This could avoid false positives by polling every millisecond to see if
             // waitingOnSynchronousDraw has become true.
@@ -2165,18 +2206,19 @@ extraIdentifyingInfoForIcon:button.extraIdentifyingInfoForIcon];
             (dispatch_semaphore_wait(sema,
                                      dispatch_time(DISPATCH_TIME_NOW,
                                                    (int64_t)(0.1 * NSEC_PER_SEC))) != 0);
-            @synchronized(self) {
-                if (semaphoreTimeout) {
-                    // This is usually because the main thread is wedged
-                    // waiting for a synchronous draw.
-                    DLog(@"** SEMAPHORE EXPIRED %@ **", frameData);
+            if (semaphoreTimeout) {
+                // This is usually because the main thread is wedged
+                // waiting for a synchronous draw.
+                DLog(@"** SEMAPHORE EXPIRED %@ **", frameData);
+                @synchronized(self) {
                     timedOut = YES;
                 }
-                frameData.destinationDrawable = drawable;
-                frameData.destinationTexture = texture;
-                frameData.destinationTexture.label = @"Drawable destination";
-                frameData.renderPassDescriptor = renderPassDescriptor;
             }
+            frameData.destinationDrawable = drawable;
+            frameData.destinationTexture = texture;
+            frameData.destinationTexture.label = @"Drawable destination";
+            frameData.renderPassDescriptor = renderPassDescriptor;
+#endif
         }
         if (frameData.destinationTexture == nil) {
             DLog(@"  abort: failed to get drawable or RPD %@", frameData);
@@ -2269,16 +2311,19 @@ extraIdentifyingInfoForIcon:button.extraIdentifyingInfoForIcon];
 #endif
         }];
 
-        DLog(@"  commit %@", frameData);
-        [commandBuffer commit];
 #if ENABLE_SYNCHRONOUS_PRESENTATION
         if (frameData.destinationDrawable) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [commandBuffer waitUntilScheduled];
-                [frameData.destinationDrawable present];
-            });
+            id<CAMetalDrawable> drawable = frameData.destinationDrawable;
+            [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> _Nonnull buffer) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [drawable present];
+                });
+            }];
         }
 #endif
+
+        DLog(@"  commit %@", frameData);
+        [commandBuffer commit];
     }];
 }
 
@@ -2393,25 +2438,14 @@ extraIdentifyingInfoForIcon:button.extraIdentifyingInfoForIcon];
 }
 
 - (NSArray<id<iTermMetalRenderer>> *)nonCellRenderers {
-    NSArray *shared = @[ _backgroundImageRenderer,
-                         _offscreenCommandLineBackgroundRenderer,
-                         _badgeRenderer,
-                         _copyBackgroundRenderer,
-                         _indicatorRenderer,
-                         _flashRenderer ];
-
-    BOOL useTemporaryTexture;
-    if (iTermTextIsMonochrome()) {
-        useTemporaryTexture = NO;
-    } else {
-        useTemporaryTexture = YES;
-    }
-    
-    if (useTemporaryTexture) {
-        return [shared arrayByAddingObject:_copyToDrawableRenderer];
-    } else {
-        return shared;
-    }
+    // Always include _copyToDrawableRenderer for deferred drawable support.
+    return @[ _backgroundImageRenderer,
+              _offscreenCommandLineBackgroundRenderer,
+              _badgeRenderer,
+              _copyBackgroundRenderer,
+              _indicatorRenderer,
+              _flashRenderer,
+              _copyToDrawableRenderer ];
 }
 
 - (void)scheduleDrawIfNeededInView:(iTermMetalView *)view {
