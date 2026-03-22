@@ -172,6 +172,7 @@ typedef struct {
     NSTimeInterval _lastFrameStartTime;
     iTermHistogram *_startToStartHistogram;
     iTermHistogram *_inFlightHistogram;
+    iTermHistogram *_currentDrawableTimeHistogram;
     MovingAverage *_currentDrawableTime;
     NSInteger _maxFramesInFlight;
 
@@ -193,6 +194,8 @@ typedef struct {
         _identifier = [NSString stringWithFormat:@"[driver %d]", gNextIdentifier++];
         _startToStartHistogram = [[iTermHistogram alloc] init];
         _inFlightHistogram = [[iTermHistogram alloc] init];
+        _inFlightHistogram.discrete = YES;
+        _currentDrawableTimeHistogram = [[iTermHistogram alloc] init];
         _startTime = [NSDate timeIntervalSinceReferenceDate];
         _fullSizeTexturePool = [[iTermTexturePool alloc] init];
         
@@ -389,12 +392,12 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
                                  [_startToStartHistogram stringValue]);
         iTermPreciseTimerSaveLog([NSString stringWithFormat:@"%@: Frames In Flight at Start", _identifier],
                                  [_inFlightHistogram stringValue]);
+        iTermPreciseTimerSaveLog([NSString stringWithFormat:@"%@: Current Drawable Time (ms)", _identifier],
+                                 [_currentDrawableTimeHistogram stringValue]);
     }
 }
 
 - (int)maximumNumberOfFramesInFlight {
-#warning TOOD: Try this.
-#if ENABLE_DYNAMIC_FRAMES_IN_FLIGHT
     if (![iTermAdvancedSettingsModel throttleMetalConcurrentFrames]) {
         return iTermMetalDriverMaximumNumberOfFramesInFlight;
     }
@@ -423,9 +426,6 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
         [_currentDrawableTime reset];
     }
     return _maxFramesInFlight;
-#else
-    return iTermMetalDriverMaximumNumberOfFramesInFlight;
-#endif
 }
 
 - (iTermMetalDriverAsyncContext *)newContextForDrawInView:(iTermMetalView *)view count:(int)count {
@@ -936,6 +936,7 @@ legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
 #endif
             }];
             [_currentDrawableTime addValue:duration];
+            [_currentDrawableTimeHistogram addValue:duration * 1000];
             if (frameData.destinationDrawable == nil) {
                 DLog(@"YIKES! Failed to get a drawable. %@/%@", self, frameData);
                 return;
