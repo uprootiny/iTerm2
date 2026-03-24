@@ -9,6 +9,7 @@
 
 #import "iTermGraphEncoder.h"
 #import "iTermDatabase.h"
+#import "iTerm2SharedARC-Swift.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

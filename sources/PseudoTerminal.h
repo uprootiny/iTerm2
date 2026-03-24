@@ -310,7 +310,8 @@ extern NSString *const iTermDidCreateTerminalWindowNotification;
 - (BOOL)restoreTabsFromArrangement:(NSDictionary *)arrangement
                              named:(NSString *)arrangementName
                           sessions:(NSArray<PTYSession *> *)sessions
-                partialAttachments:(NSDictionary *)partialAttachments;
+                partialAttachments:(NSDictionary *)partialAttachments
+              largeContentProvider:(id<iTermLargeContentProvider>)largeContentProvider;
 
 // Returns the arrangement for this window.
 - (NSDictionary*)arrangement;
