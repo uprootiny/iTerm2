@@ -3263,7 +3263,8 @@ ITERM_WEAKLY_REFERENCEABLE
     if ([term loadArrangement:arrangement
                         named:arrangementName
                      sessions:sessions
-           partialAttachments:nil]) {
+           partialAttachments:nil
+         largeContentProvider:nil]) {
         return term;
     } else {
         return term;
