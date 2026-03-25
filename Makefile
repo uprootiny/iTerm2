@@ -226,7 +226,8 @@ _setup-main:
 	# Note: this installs arm tooling as well
 	$(or $(RUSTUP),$$HOME/.cargo/bin/rustup) target add x86_64-apple-darwin
 	git submodule update --init --recursive
-	PATH="$(ORIG_PATH)" xcodebuild -downloadComponent MetalToolchain
+	PATH="$(ORIG_PATH)" xcodebuild -downloadComponent MetalToolchain || \
+		echo "WARNING: Metal Toolchain download failed. You can retry later with: xcodebuild -downloadComponent MetalToolchain"
 	@echo ""
 	@echo "Setup complete. Run 'make paranoid-deps' to build native dependencies."
 
