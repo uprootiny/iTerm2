@@ -28,6 +28,7 @@
 @class iTermPromptOnCloseReason;
 @class iTermSessionFactory;
 @class iTermToolbeltView;
+@protocol iTermLargeContentProvider;
 @protocol iTermWindowScope;
 @class iTermController;
 @class iTermTerminalWindowSizeHelper;
